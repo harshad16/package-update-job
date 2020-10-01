@@ -44,16 +44,21 @@ SEMAPHORE_LIMIT = int(os.getenv("THOTH_PACKAGE_UPDATE_SEMAPHORE_LIMIT", 1000))
 async_sem = asyncio.Semaphore(SEMAPHORE_LIMIT)
 COMPONENT_NAME = "package-update-job"
 
+
 def with_semaphore(async_sem) -> Callable:
     """Only have N async functions running at the same time."""
+
     def somedec_outer(fn):
         @wraps(fn)
         async def somedec_inner(*args, **kwargs):
             async with async_sem:
                 response = await fn(*args, **kwargs)
             return response
+
         return somedec_inner
+
     return somedec_outer
+
 
 @with_semaphore(async_sem)
 async def _gather_index_info(index: str, aggregator: Dict[str, Any],) -> None:
@@ -62,6 +67,7 @@ async def _gather_index_info(index: str, aggregator: Dict[str, Any],) -> None:
     result = await aggregator[index]["source"].get_packages()
     aggregator[index]["packages"] = result
     aggregator[index]["packages"] = aggregator[index]["packages"].packages
+
 
 @with_semaphore(async_sem)
 async def _check_package_availability(
@@ -74,17 +80,20 @@ async def _check_package_availability(
     if not package[0] in src["packages"]:
         removed_packages.add((package[1], package[0]))
         try:
-            await missing_package.publish_to_topic(missing_package.MessageContents(
-                index_url=package[1],
-                package_name=package[0],
-                component_name=COMPONENT_NAME,
-                service_version=__package_update_version__,
-            ))
+            await missing_package.publish_to_topic(
+                missing_package.MessageContents(
+                    index_url=package[1],
+                    package_name=package[0],
+                    component_name=COMPONENT_NAME,
+                    service_version=__package_update_version__,
+                )
+            )
             _LOGGER.info("%r no longer provides %r", package[1], package[0])
             return False
         except Exception as e:
             _LOGGER.exception("Failed to publish with the following error message: %r", e)
     return True
+
 
 @with_semaphore(async_sem)
 async def _check_hashes(
@@ -116,7 +125,7 @@ async def _check_hashes(
         source_hashes = {i["sha256"] for i in await source.get_package_hashes(package_version[0], package_version[1])}
     except ClientResponseError:
         _LOGGER.exception(
-            "404 error retrieving hashes for: %r==%r on %r",package_version[0], package_version[1], package_version[2],
+            "404 error retrieving hashes for: %r==%r on %r", package_version[0], package_version[1], package_version[2],
         )
         return False  # webpage might be down
 
@@ -130,8 +139,8 @@ async def _check_hashes(
                     index_url=package_version[2],
                     package_name=package_version[0],
                     package_version=package_version[1],
-                    missing_from_source=list(stored_hashes-source_hashes),
-                    missing_from_database=list(source_hashes-stored_hashes),
+                    missing_from_source=list(stored_hashes - source_hashes),
+                    missing_from_database=list(source_hashes - stored_hashes),
                     component_name=COMPONENT_NAME,
                     service_version=__package_update_version__,
                 ),
@@ -143,20 +152,17 @@ async def _check_hashes(
 
     return True
 
+
 @with_semaphore(async_sem)
-async def _get_all_versions(
-    package_name: str,
-    source: str,
-    sources,
-    accumulator: Dict[Tuple[Any, Any], Any]
-):
+async def _get_all_versions(package_name: str, source: str, sources, accumulator: Dict[Tuple[Any, Any], Any]):
     src = sources[source]["source"]
     try:
         accumulator[(package_name, source)] = await src.get_package_versions(package_name)
     except ClientResponseError:
-        _LOGGER.exception(
+        _LOGGER.warning(
             "404 error retrieving versions for: %r on %r", package_name, source,
         )
+
 
 @app.command()
 async def main():
@@ -182,12 +188,11 @@ async def main():
     all_pkgs = graph.get_python_packages_all(count=None, distinct=True)
     _LOGGER.info("Checking availability of %r package(s)", len(all_pkgs))
     for pkg in all_pkgs:
-        async_tasks.append(_check_package_availability(
-            package=pkg,
-            sources=sources,
-            removed_packages=removed_pkgs,
-            missing_package=missing_package,
-        ))
+        async_tasks.append(
+            _check_package_availability(
+                package=pkg, sources=sources, removed_packages=removed_pkgs, missing_package=missing_package,
+            )
+        )
     await asyncio.gather(*async_tasks, return_exceptions=True)
     async_tasks.clear()
 
@@ -208,18 +213,21 @@ async def main():
         if (pkg_ver[2], pkg_ver[0]) in removed_pkgs or versions[(pkg_ver[0], pkg_ver[2])] is None:  # in case of 404
             continue
         src = sources[pkg_ver[2]]["source"]
-        async_tasks.append(_check_hashes(
-            package_version=pkg_ver,
-            package_versions=versions[(pkg_ver[0], pkg_ver[2])],
-            source=src,
-            removed_packages=removed_pkgs,
-            missing_version=missing_version,
-            hash_mismatch=hash_mismatch,
-            graph=graph,
-        ))
+        async_tasks.append(
+            _check_hashes(
+                package_version=pkg_ver,
+                package_versions=versions[(pkg_ver[0], pkg_ver[2])],
+                source=src,
+                removed_packages=removed_pkgs,
+                missing_version=missing_version,
+                hash_mismatch=hash_mismatch,
+                graph=graph,
+            )
+        )
 
     await asyncio.gather(*async_tasks, return_exceptions=True)
     async_tasks.clear()
+
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
